@@ -1,0 +1,39 @@
+# Python / Environments
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+*.egg-info/
+.installed.cfg
+*.egg
+venv/
+.venv/
+.env
+
+# Project Specific (Sangat Penting agar tidak nyangkut 100MB)
+data/
+models/
+reports/
+
+# OS Specific
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# IDE & Streamlit
+.vscode/
+.idea/
+.streamlit/

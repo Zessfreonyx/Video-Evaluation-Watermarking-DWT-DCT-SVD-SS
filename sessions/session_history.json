@@ -1,0 +1,33 @@
+[
+  {
+    "id": "0ad23a2e",
+    "timestamp": "2026-06-14T00:38:25.728731",
+    "mode": "Embed",
+    "zodiak": "Aquarius",
+    "psnr": 66.04,
+    "frames_embedded": 476,
+    "video_file": "porsche.mp4"
+  },
+  {
+    "id": "f3b15274",
+    "timestamp": "2026-06-14T00:27:10.938238",
+    "mode": "Deteksi",
+    "has_watermark": true,
+    "watermark_confidence": 91.6,
+    "attack_result": "Cropping",
+    "attack_confidence": 28.3,
+    "logo_result": "Pisces",
+    "logo_confidence": 13.5,
+    "frames_analyzed": 30,
+    "video_file": "stego_Aquarius_1781371543.mp4"
+  },
+  {
+    "id": "1da380b4",
+    "timestamp": "2026-06-14T00:25:52.454598",
+    "mode": "Embed",
+    "zodiak": "Aquarius",
+    "psnr": 66.04,
+    "frames_embedded": 476,
+    "video_file": "porsche.mp4"
+  }
+]

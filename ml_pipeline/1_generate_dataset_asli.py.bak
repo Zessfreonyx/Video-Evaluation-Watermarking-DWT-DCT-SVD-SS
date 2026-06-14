@@ -1,0 +1,164 @@
+# =============================================================================
+# ml_pipeline/1_generate_dataset.py
+# Pembuat Dataset: Mega-Looping untuk menghasilkan dataset_video.csv dan dataset_logo.csv
+# =============================================================================
+#
+# CARA PAKAI:
+#   1. Pastikan folder data/videos/ berisi 8 file video host (format .mp4 atau .avi)
+#   2. Jalankan: python ml_pipeline/1_generate_dataset.py
+#   3. Hasil akan tersimpan di: data/dataset_video.csv dan data/dataset_logo.csv
+#
+# =============================================================================
+
+import os
+import sys
+import csv
+import time
+import glob
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+
+import numpy as np
+import cv2
+
+from config import (
+    ZODIAK_LABELS, ATTACK_LABELS, TRAINING_PASSWORD,
+    DATASET_VIDEO_PATH, DATASET_LOGO_PATH,
+    VIDEO_FEATURE_COLUMNS, LOGO_FEATURE_COLUMNS,
+    WATERMARK_BITS, FRAMES_PER_SECOND_SAMPLE, MAX_FRAMES_PER_VIDEO,
+    VIDEOS_DIR,
+)
+from core.security import generate_zodiak_index, generate_temporal_key
+from core.watermark_hybrid import embed_bitstream, extract_bitstream
+from core.video_utils import read_video_frames, extract_features
+from core.attacks import apply_attack
+
+
+def find_video_files(video_dir: str) -> list:
+    """Mencari semua file video di folder tertentu."""
+    extensions = ["*.mp4", "*.avi", "*.mov", "*.mkv"]
+    files = []
+    for ext in extensions:
+        files.extend(glob.glob(os.path.join(video_dir, ext)))
+    return sorted(files)
+
+
+def generate_datasets():
+    """
+    Fungsi utama Mega-Looping untuk menghasilkan dua dataset CSV.
+    """
+    start_time = time.time()
+
+    # ---- Temukan video host ----
+    video_files = find_video_files(VIDEOS_DIR)
+    if len(video_files) == 0:
+        print(f"\n[ERROR] Tidak ada video di folder: {VIDEOS_DIR}")
+        print(f"        Silakan masukkan 8 file video host ke folder tersebut.")
+        return
+
+    print("=" * 70)
+    print("GENERATE DATASET - Sistem Watermarking Berbasis Indeks DCT-STDM")
+    print("=" * 70)
+    print(f"Video ditemukan  : {len(video_files)} file")
+    print(f"Zodiak (Logo)    : {len(ZODIAK_LABELS)} kelas")
+    print(f"Kondisi Serangan : {len(ATTACK_LABELS)} kondisi")
+    total_combos = len(video_files) * len(ZODIAK_LABELS) * len(ATTACK_LABELS)
+    print(f"Total Kombinasi  : {total_combos}")
+    print("-" * 70)
+
+    # ---- Siapkan header CSV ----
+    video_header = VIDEO_FEATURE_COLUMNS + ["label_watermark", "label_attack", "zodiak", "video_source"]
+    logo_header = LOGO_FEATURE_COLUMNS + ["label_zodiak", "attack_applied", "video_source"]
+
+    video_rows = []
+    logo_rows = []
+
+    combo_count = 0
+
+    # ========== MEGA-LOOPING ==========
+    for video_path in video_files:
+        video_name = os.path.basename(video_path)
+        print(f"\n[VIDEO] {video_name}")
+
+        try:
+            frames, fps, w, h = read_video_frames(video_path)
+        except Exception as e:
+            print(f"  [SKIP] Gagal membaca video: {e}")
+            continue
+
+        if len(frames) == 0:
+            print(f"  [SKIP] Tidak ada frame yang berhasil dibaca.")
+            continue
+
+        print(f"  Frame diambil : {len(frames)} (dari total video ~{fps:.1f}fps)")
+
+        # ---- Ambil juga frame HOST asli untuk dataset detektor ----
+        for frame in frames[:20]:  # Ambil 20 frame host asli
+            try:
+                feats = extract_features(frame)
+                row = [feats[c] for c in VIDEO_FEATURE_COLUMNS]
+                row += [0, "N/A", "N/A", video_name]  # label_watermark=0 (host)
+                video_rows.append(row)
+            except Exception:
+                continue
+
+        # ---- Loop per Zodiak ----
+        for zodiak_name in ZODIAK_LABELS:
+            zodiak_bits = generate_zodiak_index(zodiak_name, WATERMARK_BITS)
+
+            # ---- Loop per Serangan ----
+            for attack_name in ATTACK_LABELS:
+                combo_count += 1
+                print(f"  [{combo_count:4d}/{total_combos}] {zodiak_name:10s} + {attack_name:20s}", end="\r")
+
+                frames_processed = 0
+
+                for frame in frames:
+                    try:
+                        # 1. Sisipkan watermark ke frame
+                        stego_frame = embed_bitstream(frame, zodiak_bits, TRAINING_PASSWORD)
+
+                        # 2. Terapkan serangan
+                        attacked_frame = apply_attack(stego_frame, attack_name)
+
+                        # 3a. Ekstrak fitur VIDEO → untuk Model 1 dan Model 2
+                        video_feats = extract_features(attacked_frame)
+                        video_row = [video_feats[c] for c in VIDEO_FEATURE_COLUMNS]
+                        video_row += [1, attack_name, zodiak_name, video_name]  # label_watermark=1
+                        video_rows.append(video_row)
+
+                        # 3b. Ekstrak bit 64-bit → untuk Model 3
+                        extracted_bits = extract_bitstream(attacked_frame, TRAINING_PASSWORD, num_bits=WATERMARK_BITS)
+                        logo_row = list(extracted_bits.astype(int)) + [zodiak_name, attack_name, video_name]
+                        logo_rows.append(logo_row)
+
+                        frames_processed += 1
+
+                    except Exception as e:
+                        print(f"\\n[ERROR] Gagal memproses frame: {e}")
+                        continue  # Skip frame yang bermasalah
+
+    print(f"\\n\\n{'=' * 70}")
+    print(f"PROSES SELESAI dalam {time.time() - start_time:.1f} detik")
+    print(f"Total baris dataset video  : {len(video_rows)}")
+    print(f"Total baris dataset logo   : {len(logo_rows)}")
+
+    # ---- Simpan ke CSV ----
+    print(f"\nMenyimpan ke: {DATASET_VIDEO_PATH}")
+    with open(DATASET_VIDEO_PATH, "w", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        writer.writerow(video_header)
+        writer.writerows(video_rows)
+
+    print(f"Menyimpan ke: {DATASET_LOGO_PATH}")
+    with open(DATASET_LOGO_PATH, "w", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        writer.writerow(logo_header)
+        writer.writerows(logo_rows)
+
+    print("\n[OK] Dataset berhasil dibuat! Silakan lanjut ke step 2, 3, dan 4.")
+    print("=" * 70)
+
+
+if __name__ == "__main__":
+    generate_datasets()

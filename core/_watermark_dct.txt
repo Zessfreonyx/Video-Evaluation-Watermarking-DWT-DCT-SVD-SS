@@ -1,0 +1,255 @@
+# =============================================================================
+# core/watermark_dct.py
+# Algoritma DCT-STDM: Embed & Extract bitstream dengan Repetition Coding
+# =============================================================================
+
+import cv2
+import numpy as np
+from scipy.fftpack import dct, idct
+from typing import Tuple, List
+
+import sys
+import os
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+
+from config import DCT_BLOCK_SIZE, DCT_MID_BAND, WATERMARK_DELTA, WATERMARK_ALPHA, WATERMARK_BITS, REPETITION_FACTOR
+from core.security import generate_spatial_key
+
+
+def _apply_dct_block(block: np.ndarray) -> np.ndarray:
+    """Terapkan 2D DCT pada sebuah blok 8x8."""
+    return dct(dct(block.T, norm="ortho").T, norm="ortho")
+
+
+def _apply_idct_block(block: np.ndarray) -> np.ndarray:
+    """Terapkan 2D IDCT (inverse DCT) pada sebuah blok 8x8."""
+    return idct(idct(block.T, norm="ortho").T, norm="ortho")
+
+
+def _get_mid_band_values(dct_block: np.ndarray) -> np.ndarray:
+    """Ambil nilai koefisien DCT pada posisi mid-band."""
+    return np.array([dct_block[r, c] for r, c in DCT_MID_BAND], dtype=np.float64)
+
+
+def _set_mid_band_values(dct_block: np.ndarray, values: np.ndarray) -> np.ndarray:
+    """Set nilai koefisien DCT pada posisi mid-band."""
+    for i, (r, c) in enumerate(DCT_MID_BAND):
+        dct_block[r, c] = values[i]
+    return dct_block
+
+
+def embed_bitstream(
+    frame: np.ndarray,
+    bitstream: np.ndarray,
+    password: str,
+    alpha: float = WATERMARK_ALPHA,
+    delta: float = WATERMARK_DELTA,
+) -> np.ndarray:
+    """
+    Menyisipkan bitstream (64-bit) ke dalam frame menggunakan DCT-STDM.
+    Setiap bit diulang sebanyak REPETITION_FACTOR untuk redundansi tinggi.
+
+    Args:
+        frame: Frame video (numpy array, BGR atau Grayscale).
+        bitstream: Array bit (0 atau 1) sepanjang WATERMARK_BITS.
+        password: Kata sandi untuk menghasilkan Spatial Key (Spread Vector).
+        alpha: Faktor Pengali Kekuatan (Strength).
+        delta: Langkah Kuantisasi STDM (Quantization Step).
+
+    Returns:
+        Frame yang sudah disisipi watermark (stego frame).
+    """
+    # Konversi ke YCbCr untuk menyisipkan di channel Y (Luminance)
+    if len(frame.shape) == 3:
+        frame_ycbcr = cv2.cvtColor(frame, cv2.COLOR_BGR2YCrCb).astype(np.float64)
+        y_channel = frame_ycbcr[:, :, 0]
+    else:
+        y_channel = frame.astype(np.float64)
+        frame_ycbcr = None
+
+    h, w = y_channel.shape
+
+    # Buat bitstream yang sudah diulang (repetition coding)
+    repeated_bits = np.repeat(bitstream, REPETITION_FACTOR)
+
+    # Dapatkan spatial key (spread vector)
+    spread = generate_spatial_key(password, len(DCT_MID_BAND))
+
+    # Iterasi per blok 8x8
+    bit_idx = 0
+    total_bits = len(repeated_bits)
+
+    for row in range(0, h - DCT_BLOCK_SIZE + 1, DCT_BLOCK_SIZE):
+        for col in range(0, w - DCT_BLOCK_SIZE + 1, DCT_BLOCK_SIZE):
+            if bit_idx >= total_bits:
+                break
+
+            block = y_channel[row:row + DCT_BLOCK_SIZE, col:col + DCT_BLOCK_SIZE]
+            dct_block = _apply_dct_block(block)
+            mid_vals = _get_mid_band_values(dct_block)
+
+            # STDM: Sisipkan bit menggunakan metode spread spectrum
+            current_bit = repeated_bits[bit_idx]
+            # Hitung proyeksi nilai mid-band terhadap spread vector
+            projection = np.dot(mid_vals, spread)
+            # Sesuaikan proyeksi ke kuantisasi STDM
+            quantized = np.round(projection / delta) * delta
+            error = quantized + (current_bit * 2 - 1) * (delta / 2) - projection
+            modified_mid = mid_vals + (error * alpha) * (spread / np.dot(spread, spread))
+
+            dct_block = _set_mid_band_values(dct_block, modified_mid)
+            y_channel[row:row + DCT_BLOCK_SIZE, col:col + DCT_BLOCK_SIZE] = _apply_idct_block(dct_block)
+            bit_idx += 1
+
+        if bit_idx >= total_bits:
+            break
+
+    # Kliping nilai agar tetap valid
+    y_channel = np.clip(y_channel, 0, 255)
+
+    # Rekonstruksi frame
+    if frame_ycbcr is not None:
+        frame_ycbcr[:, :, 0] = y_channel
+        stego_frame = cv2.cvtColor(frame_ycbcr.astype(np.uint8), cv2.COLOR_YCrCb2BGR)
+    else:
+        stego_frame = y_channel.astype(np.uint8)
+
+    return stego_frame
+
+
+def extract_bitstream(
+    frame: np.ndarray,
+    password: str,
+    num_bits: int = WATERMARK_BITS,
+    delta: float = WATERMARK_DELTA,
+) -> np.ndarray:
+    """
+    Mengekstrak bitstream dari frame menggunakan DCT-STDM.
+    Menggunakan majority voting dari repetisi untuk meningkatkan akurasi.
+
+    Args:
+        frame: Frame video stego (numpy array, BGR atau Grayscale).
+        password: Kata sandi yang sama saat penyisipan.
+        num_bits: Jumlah bit yang diekstrak (64).
+        delta: Langkah Kuantisasi STDM (harus sama dengan saat penyisipan).
+
+    Returns:
+        numpy array berisi bit hasil ekstraksi (0 atau 1).
+    """
+    # Konversi ke channel Y
+    if len(frame.shape) == 3:
+        y_channel = cv2.cvtColor(frame, cv2.COLOR_BGR2YCrCb)[:, :, 0].astype(np.float64)
+    else:
+        y_channel = frame.astype(np.float64)
+
+    h, w = y_channel.shape
+
+    total_repeated = num_bits * REPETITION_FACTOR
+    spread = generate_spatial_key(password, len(DCT_MID_BAND))
+
+    extracted_repeated = []
+    bit_count = 0
+
+    for row in range(0, h - DCT_BLOCK_SIZE + 1, DCT_BLOCK_SIZE):
+        for col in range(0, w - DCT_BLOCK_SIZE + 1, DCT_BLOCK_SIZE):
+            if bit_count >= total_repeated:
+                break
+
+            block = y_channel[row:row + DCT_BLOCK_SIZE, col:col + DCT_BLOCK_SIZE]
+            dct_block = _apply_dct_block(block)
+            mid_vals = _get_mid_band_values(dct_block)
+
+            # Dekode STDM: cek tanda proyeksi
+            projection = np.dot(mid_vals, spread)
+            quantized = np.round(projection / delta) * delta
+            remainder = projection - quantized
+            extracted_bit = 1 if remainder > 0 else 0
+            extracted_repeated.append(extracted_bit)
+            bit_count += 1
+
+        if bit_count >= total_repeated:
+            break
+
+    # Majority Voting untuk setiap bit asli
+    extracted_repeated = np.array(extracted_repeated[:total_repeated])
+    final_bits = np.zeros(num_bits, dtype=np.uint8)
+
+    for i in range(num_bits):
+        group = extracted_repeated[i * REPETITION_FACTOR:(i + 1) * REPETITION_FACTOR]
+        # Majority vote: bit yang paling sering muncul
+        final_bits[i] = 1 if np.sum(group) > (REPETITION_FACTOR / 2) else 0
+
+    return final_bits
+
+
+def calculate_psnr(original: np.ndarray, stego: np.ndarray) -> float:
+    """
+    Menghitung nilai PSNR (Peak Signal-to-Noise Ratio) antara
+    frame asli dan frame stego (dalam dB).
+    Nilai PSNR > 40 dB dianggap sangat baik (tidak terlihat perbedaannya).
+
+    Args:
+        original: Frame asli.
+        stego: Frame stego.
+
+    Returns:
+        Nilai PSNR dalam dB.
+    """
+    orig = original.astype(np.float64)
+    steg = stego.astype(np.float64)
+    mse = np.mean((orig - steg) ** 2)
+    if mse == 0:
+        return float("inf")
+    return 20 * np.log10(255.0 / np.sqrt(mse))
+
+
+def calculate_ber(original_bits: np.ndarray, extracted_bits: np.ndarray) -> float:
+    """
+    Menghitung Bit Error Rate (BER) antara bit asli dan bit yang diekstrak.
+    BER = 0.0 artinya sempurna, BER = 1.0 artinya semua bit salah.
+
+    Args:
+        original_bits: Bit yang disisipkan.
+        extracted_bits: Bit yang berhasil diekstrak.
+
+    Returns:
+        Nilai BER (0.0 hingga 1.0).
+    """
+    min_len = min(len(original_bits), len(extracted_bits))
+    errors = np.sum(original_bits[:min_len] != extracted_bits[:min_len])
+    return errors / min_len
+
+
+# =============================================================================
+# DEMO
+# =============================================================================
+if __name__ == "__main__":
+    print("=" * 60)
+    print("DEMO: core/watermark_dct.py")
+    print("=" * 60)
+
+    from core.security import generate_zodiak_index
+
+    # Buat frame uji (640x480, warna acak)
+    test_frame = np.random.randint(50, 200, (480, 640, 3), dtype=np.uint8)
+    password = "RAHASIA123"
+    zodiak = "Aries"
+
+    print(f"\n[1] Buat Indeks 64-bit untuk zodiak '{zodiak}'")
+    original_bits = generate_zodiak_index(zodiak)
+    print(f"    Bit asli : {original_bits[:16]}...")
+
+    print(f"\n[2] Sisipkan ke frame uji (480x640)")
+    stego_frame = embed_bitstream(test_frame, original_bits, password)
+
+    psnr = calculate_psnr(test_frame, stego_frame)
+    print(f"    PSNR    : {psnr:.2f} dB")
+
+    print(f"\n[3] Ekstrak kembali dari stego frame")
+    extracted_bits = extract_bitstream(stego_frame, password)
+    print(f"    Bit ekstrak: {extracted_bits[:16]}...")
+
+    ber = calculate_ber(original_bits, extracted_bits)
+    print(f"    BER     : {ber:.4f} ({int(ber * 64)} bit error dari 64)")
+
+    print("\n[OK] watermark_dct.py berjalan dengan sempurna!")

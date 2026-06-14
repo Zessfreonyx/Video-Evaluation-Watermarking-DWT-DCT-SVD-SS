@@ -54,6 +54,21 @@ Dashboard ini dilengkapi dengan *Attack Lab* interaktif. Anda bisa mengunggah vi
 - **Gaussian Noise (STD = 15)**
 - **Cropping & Rotation**
 
+## 📊 Dataset & Machine Learning Features
+Sistem ini menggunakan algoritma **Random Forest** dan **Gradient Boosting** yang dilatih menggunakan dataset spesifik:
+
+### 1. Kelas Target (Labeling)
+- **Kelas Serangan (9 Kelas):** `Clean` (Bersih), `Gaussian_Noise`, `JPEG_Compression`, `Blur`, `Resize`, `Darkening`, `Brightening`, `Rotate`, `Cropping`.
+- **Kelas Logo Zodiak (8 Kelas):** `Aquarius`, `Cancer`, `Gemini`, `Leo`, `Libra`, `Pisces`, `Sagitarius`, `Scorpio`.
+
+### 2. Fitur yang Diekstrak (Input Model)
+- **Model Pendeteksi Serangan (11 Fitur Hibrida):**
+  - **Spasial (Warna):** `pixel_mean`, `pixel_variance`, `pixel_skewness`, `pixel_kurtosis`.
+  - **Spasial (Tekstur/Tepi):** `edge_density`, `glcm_contrast`, `glcm_energy`.
+  - **Transformasi (Frekuensi):** `dwt_LL_mean`, `dwt_LL_variance`, `svd_S_mean`, `svd_S_variance`.
+- **Model Spesialis Logo:** 
+  - Menggunakan **64 parameter biner** (`bit_1` hingga `bit_64`) yang berhasil diekstrak/direkonstruksi dari video untuk diklasifikasikan ke dalam 8 logo Zodiak.
+
 ## ⚙️ Parameter Konfigurasi Utama
 Sistem ini menggunakan parameter yang dikalibrasi secara khusus untuk menahan serangan tingkat ekstrim. Pengaturan ini digembok di dalam file `config.py`:
 - **SVD Scaling Factor (Alpha) = 250.0:** Menentukan tingkat ketebalan/kekuatan *watermark* yang ditanamkan pada nilai singular matriks SVD. Nilai 250 adalah titik keseimbangan (Trade-Off) optimal di mana *watermark* sangat sulit dihancurkan oleh kompresi tanpa membuat video menjadi rusak parah secara visual.

@@ -37,7 +37,6 @@ Masukkan beberapa video MP4/AVI pendek dan bersih (sekitar 3-5 detik) ke dalam f
 Jalankan deretan skrip di bawah ini untuk melatih AI di komputer Anda sendiri. Skrip ini akan menyiksa video Anda dengan serangan (Noise, Blur, JPEG, Crop) secara otomatis.
 ```bash
 python ml_pipeline/1_generate_dataset.py
-python ml_pipeline/2_train_detector.py
 python ml_pipeline/3_train_attack_specialist.py
 python ml_pipeline/4_train_logo_specialist.py
 ```

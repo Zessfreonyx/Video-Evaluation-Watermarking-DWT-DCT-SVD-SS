@@ -54,6 +54,11 @@ Dashboard ini dilengkapi dengan *Attack Lab* interaktif. Anda bisa mengunggah vi
 - **Gaussian Noise (STD = 15)**
 - **Cropping & Rotation**
 
+## ⚙️ Parameter Konfigurasi Utama
+Sistem ini menggunakan parameter yang dikalibrasi secara khusus untuk menahan serangan tingkat ekstrim. Pengaturan ini digembok di dalam file `config.py`:
+- **SVD Scaling Factor (Alpha) = 250.0:** Menentukan tingkat ketebalan/kekuatan *watermark* yang ditanamkan pada nilai singular matriks SVD. Nilai 250 adalah titik keseimbangan (Trade-Off) optimal di mana *watermark* sangat sulit dihancurkan oleh kompresi tanpa membuat video menjadi rusak parah secara visual.
+- **Spread Spectrum Repetition = 15:** Menyebarkan dan mengulangi setiap 1-bit data rahasia ke dalam 15 lokasi frekuensi yang acak. Berfungsi sebagai perisai pelindung agar data tetap bisa dibaca meskipun beberapa blok video terpotong (*Cropping*) atau terkena *noise*.
+
 ## ⚠️ Known Limitations (Batasan Sistem)
 Konsep matematis pemetaan grid spasial (Blok DWT 8x8) sangat rentan terhadap **Video Transcoders** (seperti mengirim video via WhatsApp/TikTok). Platform tersebut merubah secara permanen struktur resolusi geometris dan *framerate* video (*Desynchronization Attack*). Arsitektur *Machine Learning* di sistem ini dibuat untuk menahan gempuran kerusakan sinyal visual, namun transformasi dimensi total akan mengakibatkan data 64-bit hancur sepenuhnya.
 

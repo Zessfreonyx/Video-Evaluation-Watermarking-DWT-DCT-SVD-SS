@@ -38,7 +38,7 @@ from core.security import (
     generate_zodiak_index, generate_temporal_key, verify_password_strength,
     decode_hybrid_labels, attack_to_4bit, zodiak_to_3bit
 )
-from core.watermark_hybrid import embed_bitstream, extract_bitstream, calculate_psnr, calculate_ber
+from core.watermark_hybrid import embed_bitstream, extract_bitstream, calculate_psnr, calculate_ssim, calculate_ber
 from core.video_utils import read_all_frames, save_video, extract_features, get_video_info
 from core.attacks import apply_attack
 
@@ -211,6 +211,18 @@ def run_master_detection(
     # - Logo Confidence: proporsi frame yang memilih logo pemenang
     logo_conf = float(np.sum(y_preds_arr[:, 4].astype(int) == logo_vote) / len(all_y_preds))
 
+    # Hitung Distribusi Voting AI untuk semua Logo
+    logo_distribution = {}
+    from config import ZODIAK_LABELS
+    for val, count in zip(logo_values, logo_counts):
+        logo_name = ZODIAK_LABELS[int(val)]
+        logo_distribution[logo_name] = float(count / len(all_y_preds))
+        
+    # Pastikan semua zodiak ada di kamus, isi dengan 0.0 jika tidak ada yang vote
+    for name in ZODIAK_LABELS:
+        if name not in logo_distribution:
+            logo_distribution[name] = 0.0
+
     return {
         "y_final_bits": y_final.tolist(),
         "attack_result": attack_result,
@@ -221,6 +233,7 @@ def run_master_detection(
         "total_frames": total,
         "attack_bits": y_final[:4].tolist(),
         "logo_scalar": logo_vote,
+        "logo_distribution": logo_distribution,
     }
 
 
@@ -304,6 +317,12 @@ def page_embed():
         uploaded_video = st.file_uploader("Upload Video Host (Asli)", type=["mp4", "avi", "mov"])
         zodiak_choice = st.selectbox("Pilih Logo Zodiak", ZODIAK_LABELS)
         password = st.text_input("Kata Sandi Rahasia", type="password", placeholder="Minimal 6 karakter")
+        num_frames_embed = st.selectbox(
+            "Jumlah Frame Disisipkan 🛡️",
+            options=[50, 100, 150],
+            index=0,
+            help="Semakin banyak frame yang disisipi, semakin tahan banting terhadap serangan pemotongan video. Saat Ekstraksi, Anda bisa memilih subset frame yang lebih kecil (5/15/30) untuk efisiensi."
+        )
 
     with col2:
         if uploaded_video:
@@ -340,7 +359,10 @@ def page_embed():
             try:
                 frames, fps, w, h = read_all_frames(tmp_path)
                 zodiak_bits = generate_zodiak_index(zodiak_choice, WATERMARK_BITS)
-                temporal_key = generate_temporal_key(password, len(frames), max(1, len(frames) // 3))
+                
+                # Gunakan num_frames_embed dari input user
+                actual_frames_to_embed = min(num_frames_embed, len(frames))
+                temporal_key = generate_temporal_key(password, len(frames), actual_frames_to_embed)
 
                 stego_frames = frames.copy()
                 for idx in temporal_key:
@@ -348,6 +370,7 @@ def page_embed():
 
                 sample_idx = temporal_key[0] if temporal_key else 0
                 psnr = calculate_psnr(frames[sample_idx], stego_frames[sample_idx])
+                ssim_score = calculate_ssim(frames[sample_idx], stego_frames[sample_idx])
 
                 # Simpan Video Stego
                 stego_name = "stego.mp4"
@@ -366,12 +389,14 @@ def page_embed():
                 return
 
         st.success(f"✅ Watermark berhasil disisipkan! Proyek tersimpan di: `{session_dir}`")
-        col_a, col_b, col_c = st.columns(3)
+        col_a, col_b, col_c, col_d = st.columns(4)
         with col_a:
             st.markdown(f'<div class="metric-card"><div class="metric-val">{psnr:.1f}</div><div class="metric-lbl">PSNR (dB)</div></div>', unsafe_allow_html=True)
         with col_b:
-            st.markdown(f'<div class="metric-card"><div class="metric-val">{len(temporal_key)}</div><div class="metric-lbl">Frame Disisipkan</div></div>', unsafe_allow_html=True)
+            st.markdown(f'<div class="metric-card"><div class="metric-val">{ssim_score:.4f}</div><div class="metric-lbl">SSIM</div></div>', unsafe_allow_html=True)
         with col_c:
+            st.markdown(f'<div class="metric-card"><div class="metric-val">{len(temporal_key)}</div><div class="metric-lbl">Frame Disisipkan</div></div>', unsafe_allow_html=True)
+        with col_d:
             st.markdown(f'<div class="metric-card"><div class="metric-val">{WATERMARK_BITS}</div><div class="metric-lbl">Bit Indeks</div></div>', unsafe_allow_html=True)
 
         # Simpan project.json
@@ -381,6 +406,7 @@ def page_embed():
             "created_at": datetime.datetime.now().isoformat(),
             "zodiak": zodiak_choice,
             "psnr": round(psnr, 2),
+            "ssim": float(ssim_score),
             "frames_embedded": len(temporal_key),
             "video_file_original": uploaded_video.name,
             "original_path": original_path,
@@ -487,7 +513,19 @@ def page_detect(models: dict):
         st.markdown("**1. Pilih Proyek & Konfigurasi**")
         selected_session = st.selectbox("📁 Pilih Proyek", sessions)
         password = st.text_input("🔑 Kata Sandi Rahasia", type="password", placeholder="Sandi yang dipakai saat Embed")
-        num_frames = st.slider("Jumlah Frame Dianalisis", min_value=5, max_value=30, value=10, step=5)
+        num_frames = st.selectbox(
+            "Jumlah Frame Dianalisis ⚡",
+            options=[5, 15, 30],
+            index=2,
+            help="Anda hanya perlu menganalisis SUBSET frame dari keseluruhan frame yang disisipkan. Sistem akan otomatis sinkronisasi dengan kunci embed. 5 = Super Cepat, 30 = Lebih Teliti."
+        )
+        
+        master_data = models.get("master")
+        available_models = list(master_data["models"].keys()) if master_data and "models" in master_data else []
+        selected_algorithm = None
+        if available_models:
+            default_idx = available_models.index(master_data["best_algorithm"]) if master_data["best_algorithm"] in available_models else 0
+            selected_algorithm = st.selectbox("🤖 Pilih Algoritma AI (Multi-Model):", available_models, index=default_idx)
 
     record = load_project_record(selected_session)
 
@@ -517,16 +555,6 @@ def page_detect(models: dict):
     master_ready = models.get("master") is not None
     if not master_ready:
         st.warning("⚠️ Model Master belum tersedia. Jalankan: `python ml_pipeline/2_train_master_model.py`")
-        
-    master_data = models.get("master")
-    available_models = list(master_data["models"].keys()) if master_data and "models" in master_data else []
-    
-    selected_algorithm = None
-    if available_models:
-        default_idx = available_models.index(master_data["best_algorithm"]) if master_data["best_algorithm"] in available_models else 0
-        selected_algorithm = st.selectbox("🤖 Pilih Algoritma AI (Multi-Model Support):", available_models, index=default_idx)
-    else:
-        st.info("Fitur Multi-Model belum tersedia, menggunakan model default.")
 
     if st.button("🔬 Mulai Ekstraksi BER & Analisis AI Master", use_container_width=True, type="primary"):
         if not password:
@@ -557,14 +585,42 @@ def page_detect(models: dict):
                 st.markdown("### 🧮 Tahap 1: Verifikasi Kriptografi (BER)")
 
                 true_bits = generate_zodiak_index(zodiak_true, WATERMARK_BITS)
-                temporal_key = generate_temporal_key(password, len(frames_xa), max(1, len(frames_xa) // 3))
+                # Bangkitkan ulang SELURUH kunci embed asli menggunakan frames_embedded dari project.json
+                # Ini memastikan frame yang diekstrak adalah SUBSET VALID dari frame yang disisipkan
+                frames_embedded_original = record.get("frames_embedded", num_frames)
+                full_temporal_key = generate_temporal_key(password, len(frames_xa), frames_embedded_original)
+                # Ambil hanya num_frames pertama sebagai target ekstraksi (efisiensi)
+                temporal_key = full_temporal_key[:num_frames]
+
+                best_math_zodiak = "Unknown"
+                best_math_ber = 1.0
 
                 if not temporal_key:
                     ber = 1.0
                 else:
-                    sample_idx = temporal_key[0]
-                    extracted_bits = extract_bitstream(frames_xa[sample_idx], password=password, alpha=SVD_SCALING_FACTOR, num_bits=WATERMARK_BITS)
-                    ber = calculate_ber(true_bits, extracted_bits)
+                    # --- MAJORITY VOTING BER ---
+                    # Ambil sejumlah frame sesuai pilihan num_frames
+                    ber_indices = temporal_key[:num_frames]
+                    all_extracted_bits = []
+
+                    for idx in ber_indices:
+                        bits = extract_bitstream(frames_xa[idx], password=password, alpha=SVD_SCALING_FACTOR, num_bits=WATERMARK_BITS)
+                        all_extracted_bits.append(bits)
+
+                    # Majority Vote: jika rata-rata >= 0.5, bit dinyatakan '1', sebaliknya '0'
+                    all_extracted_arr = np.array(all_extracted_bits)
+                    majority_bits = np.where(np.mean(all_extracted_arr, axis=0) >= 0.5, 1, 0).astype(np.uint8)
+
+                    # Hitung BER terhadap Ground Truth
+                    ber = calculate_ber(true_bits, majority_bits)
+                    
+                    # Hitung BER terhadap SEMUA kemungkinan zodiak untuk mencari "Tebakan Murni Matematika"
+                    for z_label in ZODIAK_LABELS:
+                        z_bits = generate_zodiak_index(z_label, WATERMARK_BITS)
+                        z_ber = calculate_ber(z_bits, majority_bits)
+                        if z_ber < best_math_ber:
+                            best_math_ber = z_ber
+                            best_math_zodiak = z_label
 
                 ber_col1, ber_col2 = st.columns([1, 2])
                 with ber_col1:
@@ -576,6 +632,8 @@ def page_detect(models: dict):
                         st.warning("⚠️ **BER Sedang.** Video mungkin mengalami serangan berat. Sandi kemungkinan benar.")
                     else:
                         st.error("❌ **BER Tinggi!** Kemungkinan sandi salah atau watermark hancur.")
+                        
+                st.info(f"🤖 **Tebakan Murni Matematika:** {best_math_zodiak} (BER terendah: {best_math_ber:.4f})")
 
                 # =============================================
                 # TAHAP 2: PREDIKSI AI MASTER
@@ -596,16 +654,52 @@ def page_detect(models: dict):
         # Jika Kriptografi (Tahap 1) berhasil memvalidasi watermark (BER < 0.15),
         # maka kita TIMPA tebakan AI yang mungkin meleset dengan fakta matematis.
         # =============================================
-        if ber < 0.15:
-            result["zodiak_result"] = zodiak_true
-            result["logo_confidence"] = 1.0
+        # TRUE HYBRID: RELIABILITY-WEIGHTED FUSION
+        # Kriptografi 55%, AI 45% (Dikalibrasi berdasarkan Rapor Akurasi)
+        # =============================================
+        W_MATH = 0.55
+        W_AI_BASE = 0.45
+        
+        # 1. Hitung Keyakinan Matematika (Drop jika BER naik, hancur di BER >= 0.5)
+        # KITA MENGGUNAKAN TEBAKAN MURNI MATEMATIKA, BUKAN GROUND TRUTH
+        c_math = max(0.0, 1.0 - (best_math_ber * 2.0))
+        math_score = W_MATH * c_math
+        
+        # 2. Kalibrasi Hak Suara AI berdasarkan "Rapor" Historisnya
+        ai_historical_acc = 1.0
+        if "results" in master_data and selected_algorithm in master_data["results"]:
+            # Ambil akurasi logo spesifik milik algoritma ini
+            ai_historical_acc = master_data["results"][selected_algorithm].get("logo_acc", 1.0)
             
-            # Sesuaikan format 5 Nilai Prediksi hibrida agar cocok dengan fakta
-            from config import ZODIAK_LABELS
-            if zodiak_true in ZODIAK_LABELS:
-                true_scalar = ZODIAK_LABELS.index(zodiak_true)
-                result["logo_scalar"] = true_scalar
-                result["y_final_bits"][4] = true_scalar
+        # Hak suara AI yang sesungguhnya (setelah dipotong penalti)
+        W_AI_ACTUAL = W_AI_BASE * ai_historical_acc
+        
+        # 3. Penggabungan Suara (FULL DISTRIBUTION FUSION)
+        # Inisialisasi poin 0 untuk semua zodiak
+        scores = {z_name: 0.0 for z_name in ZODIAK_LABELS}
+            
+        # Tambahkan poin dari Kriptografi Matematika ke Pemenang Matematika
+        if best_math_zodiak in scores:
+            scores[best_math_zodiak] += math_score
+        
+        # Tambahkan poin dari SELURUH distribusi AI (Bukan cuma pemenang pertamanya saja)
+        if "logo_distribution" in result:
+            for z_name, z_pct in result["logo_distribution"].items():
+                if z_name in scores:
+                    scores[z_name] += W_AI_ACTUAL * z_pct
+                    
+        # 4. Cari Pemenang (Logo dengan Poin Tertinggi)
+        winner_logo = max(scores, key=scores.get)
+        final_confidence = scores[winner_logo]
+        
+        # Timpa hasil prediksi AI murni dengan hasil Hibrida ini
+        result["zodiak_result"] = winner_logo
+        result["logo_confidence"] = final_confidence
+        
+        # Sesuaikan metadata prediksi agar cocok dengan label kelas
+        if winner_logo in ZODIAK_LABELS:
+            result["logo_scalar"] = ZODIAK_LABELS.index(winner_logo)
+            result["y_final_bits"][4] = result["logo_scalar"]
 
         # ===== TAMPILKAN HASIL AI =====
         st.markdown("---")
@@ -648,6 +742,19 @@ def page_detect(models: dict):
         logo = result["zodiak_result"]
         st.markdown('<span class="step-badge">HASIL LOGO ZODIAK</span>', unsafe_allow_html=True)
         st.markdown(f'<div class="result-box">🔮 <b>Logo Zodiak: {logo}</b> (Keyakinan: {result["logo_confidence"]*100:.1f}%)</div>', unsafe_allow_html=True)
+        
+        # --- Tampilkan Distribusi Voting AI ---
+        if "logo_distribution" in result:
+            with st.expander("📊 Lihat Detail Kebingungan AI (Distribusi Suara)"):
+                st.markdown('<p style="font-size:14px; color:#a0a0a0;">Berikut adalah rincian tebakan murni AI sebelum dikoreksi oleh Matematika. Semakin merata suaranya, semakin buta AI tersebut akibat kompresi H.264.</p>', unsafe_allow_html=True)
+                dist_data = result["logo_distribution"]
+                sorted_dist = dict(sorted(dist_data.items(), key=lambda item: item[1], reverse=True))
+                
+                for z_name, z_pct in sorted_dist.items():
+                    if z_pct > 0:
+                        st.caption(f"{z_name} ({z_pct*100:.1f}%)")
+                        st.progress(float(z_pct))
+        # --------------------------------------
 
         # Visualisasi 5 Nilai Prediksi (Hibrida)
         st.markdown("---")
@@ -798,6 +905,8 @@ def page_history():
                 st.markdown(f"**🎯 Logo Zodiak:** `{record.get('zodiak', '-')}`")
                 st.markdown(f"**📅 Dibuat:** `{record.get('created_at', '-')[:19]}`")
                 st.markdown(f"**📐 PSNR:** `{record.get('psnr', '-')} dB`")
+                if "ssim" in record:
+                    st.markdown(f"**🔬 SSIM:** `{record.get('ssim', '-')}`")
 
                 # Tampilkan serangan yang pernah dilakukan
                 attacked = record.get("attacked_videos", {})

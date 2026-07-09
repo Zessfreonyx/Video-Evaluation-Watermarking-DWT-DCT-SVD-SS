@@ -263,11 +263,16 @@ def train_master_model():
         plt.tight_layout()
         plt.savefig(logo_cm_path, dpi=150)
 
-    # Simpan model pemenang ke disk
-    print(f"\n[INFO] Menyimpan model pemenang ke {MODEL_MASTER_PATH}...")
+    # Simpan SEMUA model ke disk (agar fitur Multi-Model Dropdown berfungsi)
+    print(f"\n[INFO] Menyimpan seluruh model ke {MODEL_MASTER_PATH}...")
+    
+    all_models = {name: res["model"] for name, res in results.items()}
+    all_results = {name: {"logo_acc": res["logo_acc"], "attack_acc": res["attack_acc"]} for name, res in results.items()}
+    
     master_bundle = {
-        "models": {best_name: best["model"]},
+        "models": all_models,
         "best_algorithm": best_name,
+        "results": all_results,
         "feature_columns": MASTER_FEATURE_COLUMNS,
         "target_columns": MASTER_TARGET_COLUMNS,
         "zodiak_labels": ZODIAK_LABELS,

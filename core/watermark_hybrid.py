@@ -110,7 +110,7 @@ def _embed_to_band(band: np.ndarray, modulated_bits: np.ndarray, password: str, 
     if blocks_h * blocks_w < total_bits:
         raise ValueError(
             f"Sub-band terlalu kecil untuk memuat {total_bits} bit. "
-            f"Pastikan resolusi video minimal 480p."
+            f"Pastikan resolusi video minimal 720p."
         )
 
     band_embedded = band.copy()
@@ -353,3 +353,21 @@ def calculate_ber(original_bits: np.ndarray, extracted_bits: np.ndarray) -> floa
     min_len = min(len(original_bits), len(extracted_bits))
     errors = np.sum(original_bits[:min_len] != extracted_bits[:min_len])
     return errors / min_len
+
+def calculate_ssim(original: np.ndarray, stego: np.ndarray) -> float:
+    """
+    Menghitung Structural Similarity Index Measure (SSIM).
+    Mengukur kesamaan struktural gambar, nilai mendekati 1.0 adalah yang terbaik.
+    """
+    from skimage.metrics import structural_similarity as ssim
+    
+    # Konversi ke grayscale untuk hitung SSIM (standard)
+    if len(original.shape) == 3:
+        orig_gray = cv2.cvtColor(original, cv2.COLOR_BGR2GRAY)
+        steg_gray = cv2.cvtColor(stego, cv2.COLOR_BGR2GRAY)
+    else:
+        orig_gray = original
+        steg_gray = stego
+        
+    score, _ = ssim(orig_gray, steg_gray, full=True, data_range=255)
+    return float(score)
